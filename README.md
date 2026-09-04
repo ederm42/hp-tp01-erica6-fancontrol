@@ -4,7 +4,9 @@
 
 Small Unraid/Linux fan controller for the **HP Pavilion TP01** Ryzen edition which uses the **Erica6 motherboard**.
 
-I made this because the HDDs in my TP01 were getting too hot and HP gives us basically no fan controls, and I could not get any ordinary fan controller to work. It reads Ryzen CPU temperature plus the hottest temperature from **all disks**, then drives the two motherboard fan headers. It was made as an **Unraid plugin**, but should also work on **other Linux distributions**.
+I made this because the HDDs in my TP01 were getting too hot and HP gives us basically no fan controls, and I could not get any ordinary fan controller to work. It reads Ryzen CPU temperature plus the hottest temperature from **all disks**, then drives the two motherboard fan headers. 
+
+It was made as an **Unraid plugin**, but should also work on **other Linux distributions**.
 
 Tested on:
 
