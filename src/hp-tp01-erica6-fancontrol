@@ -1,0 +1,362 @@
+#!/bin/bash
+set -u
+
+NAME="hp-tp01-erica6-fancontrol"
+CONFIG="${HP_TP01_ERICA6_FANCONTROL_CONFIG:-/etc/hp-tp01-erica6-fancontrol.conf}"
+STATUS_FILE="${HP_TP01_ERICA6_FANCONTROL_STATUS:-/var/run/hp-tp01-erica6-fancontrol.status}"
+DISK_SCAN_FILE="${HP_TP01_ERICA6_FANCONTROL_DISKS:-/var/run/hp-tp01-erica6-fancontrol.disks}"
+
+# Defaults. A config file may override these.
+LOOP_DELAY=0.5
+DISK_POLL_SECONDS=30
+DISK_CACHE_SECONDS=600
+STATUS_SECONDS=30
+
+# Confirmed TP01 mapping:
+#   pwm1/fan1 = 3-pin rear SYS_FAN
+#   pwm2/fan2 = 4-pin CPU_FAN + splitter
+SYS_HEADER_CPU_CURVE="45:110 55:130 65:165 75:210 85:255"
+SYS_HEADER_DISK_CURVE="30:110 35:125 38:145 41:170 44:200 47:230 50:255"
+CPU_HEADER_CPU_CURVE="45:64 55:90 65:130 75:190 85:255"
+CPU_HEADER_DISK_CURVE="30:64 35:90 38:120 41:160 44:200 47:235 50:255"
+CPU_EMERGENCY_C=90
+DISK_EMERGENCY_C=50
+
+[[ -r "$CONFIG" ]] && source "$CONFIG"
+
+log() {
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+fail() {
+    log "ERROR: $*"
+    exit 1
+}
+
+max2() {
+    (( $1 > $2 )) && echo "$1" || echo "$2"
+}
+
+clamp_pwm() {
+    local v=$1
+    (( v < 0 )) && v=0
+    (( v > 255 )) && v=255
+    echo "$v"
+}
+
+curve_value() {
+    local temp=$1 curve=$2 pair t p prev_t="" prev_p=""
+
+    for pair in $curve; do
+        t=${pair%%:*}
+        p=${pair##*:}
+        [[ "$t" =~ ^[0-9]+$ && "$p" =~ ^[0-9]+$ ]] || continue
+
+        if [[ -z "$prev_t" ]]; then
+            if (( temp <= t )); then
+                echo "$p"
+                return
+            fi
+            prev_t=$t
+            prev_p=$p
+            continue
+        fi
+
+        if (( temp <= t )); then
+            if (( t == prev_t )); then
+                echo "$p"
+            else
+                echo $(( prev_p + (temp - prev_t) * (p - prev_p) / (t - prev_t) ))
+            fi
+            return
+        fi
+
+        prev_t=$t
+        prev_p=$p
+    done
+
+    [[ -n "$prev_p" ]] && echo "$prev_p" || echo 255
+}
+
+find_hwmon() {
+    local h
+    for h in /sys/class/hwmon/hwmon*; do
+        [[ -r "$h/name" ]] || continue
+        [[ "$(cat "$h/name" 2>/dev/null)" == "it8628" ]] && { echo "$h"; return 0; }
+    done
+    return 1
+}
+
+ensure_it87() {
+    local h
+    h=$(find_hwmon || true)
+    if [[ -n "$h" ]]; then
+        echo "$h"
+        return 0
+    fi
+
+    command -v modprobe >/dev/null 2>&1 || return 1
+    modinfo it87 >/dev/null 2>&1 || return 1
+
+    modprobe -r it87 2>/dev/null || true
+    modprobe it87 force_id=0x8628 || return 1
+    sleep 1
+    find_hwmon
+}
+
+find_cpu_temp_file() {
+    local h label f
+    for h in /sys/class/hwmon/hwmon*; do
+        [[ -r "$h/name" ]] || continue
+        [[ "$(cat "$h/name" 2>/dev/null)" == "k10temp" ]] || continue
+
+        for label in "$h"/temp*_label; do
+            [[ -r "$label" ]] || continue
+            if [[ "$(cat "$label" 2>/dev/null)" == "Tctl" ]]; then
+                f=${label%_label}_input
+                [[ -r "$f" ]] && { echo "$f"; return 0; }
+            fi
+        done
+
+        [[ -r "$h/temp1_input" ]] && { echo "$h/temp1_input"; return 0; }
+    done
+    return 1
+}
+
+read_cpu_c() {
+    local raw
+    [[ -n "${CPU_TEMP_FILE:-}" && -r "$CPU_TEMP_FILE" ]] || return 1
+    raw=$(cat "$CPU_TEMP_FILE" 2>/dev/null) || return 1
+    [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+    (( raw >= 1000 && raw <= 120000 )) || return 1
+    echo $(( raw / 1000 ))
+}
+
+smart_temp_c() {
+    local dev=$1 out temp
+
+    if [[ "$dev" == /dev/nvme* ]]; then
+        out=$(timeout 4 smartctl -A "$dev" 2>/dev/null || true)
+    else
+        out=$(timeout 4 smartctl -n standby -A "$dev" 2>/dev/null || true)
+    fi
+
+    temp=$(awk '
+      ($1==190 || $1==194) && $10 ~ /^[0-9]+$/ { print $10; exit }
+      /^Temperature:/ {
+        for (i=2;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit }
+      }
+      /Current Drive Temperature:/ {
+        for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit }
+      }
+      /^Temperature Sensor [0-9]+:/ {
+        for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit }
+      }
+    ' <<< "$out")
+
+    [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > 0 && temp < 100 )) || return 1
+    echo "$temp"
+}
+
+scan_disks() {
+    local tmp="${DISK_SCAN_FILE}.$$" dev type temp
+    : > "$tmp"
+    printf '#%s\n' "$(date +%s)" >> "$tmp"
+
+    while read -r dev type; do
+        [[ "$type" == "disk" && -n "$dev" ]] || continue
+        if temp=$(smart_temp_c "/dev/$dev"); then
+            printf '%s|%s\n' "/dev/$dev" "$temp" >> "$tmp"
+        else
+            printf '%s|\n' "/dev/$dev" >> "$tmp"
+        fi
+    done < <(lsblk -dn -o NAME,TYPE 2>/dev/null)
+
+    mv -f "$tmp" "$DISK_SCAN_FILE"
+}
+
+command -v smartctl >/dev/null 2>&1 || fail "smartctl not found (install smartmontools)"
+command -v lsblk >/dev/null 2>&1 || fail "lsblk not found"
+command -v timeout >/dev/null 2>&1 || fail "timeout not found"
+
+# Do not allow two controllers to fight each other.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>/var/run/hp-tp01-erica6-fancontrol.lock
+    flock -n 9 || fail "already running"
+fi
+
+H=$(ensure_it87 || true)
+[[ -n "$H" ]] || fail "it87 driver not available or IT8628 compatibility interface did not appear"
+
+for f in pwm1 pwm2 pwm1_enable pwm2_enable fan1_input fan2_input; do
+    [[ -e "$H/$f" ]] || fail "$H/$f is missing"
+done
+
+CPU_TEMP_FILE=$(find_cpu_temp_file || true)
+[[ -n "$CPU_TEMP_FILE" ]] || log "WARNING: k10temp/Tctl not found; fail-safe will run both headers at full speed"
+
+mkdir -p "$(dirname "$STATUS_FILE")" "$(dirname "$DISK_SCAN_FILE")"
+rm -f "$STATUS_FILE" "$DISK_SCAN_FILE"
+
+DISK_SCAN_PID=""
+cleanup() {
+    trap - EXIT INT TERM
+    [[ -n "$DISK_SCAN_PID" ]] && kill "$DISK_SCAN_PID" 2>/dev/null || true
+    # Leave cooling high while HP firmware takes control back.
+    echo 1 > "$H/pwm1_enable" 2>/dev/null || true
+    echo 1 > "$H/pwm2_enable" 2>/dev/null || true
+    echo 255 > "$H/pwm1" 2>/dev/null || true
+    echo 255 > "$H/pwm2" 2>/dev/null || true
+    rm -f "$STATUS_FILE"
+    log "stopped; set both headers to 255 and released control"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+declare -A LAST_TEMP
+declare -A LAST_SEEN
+DISKS=()
+LAST_SCAN_STAMP=""
+LAST_SCAN_START=0
+LAST_STATUS=0
+DISK_READY=0
+
+start_disk_scan() {
+    scan_disks &
+    DISK_SCAN_PID=$!
+    LAST_SCAN_START=$(date +%s)
+}
+
+load_disk_scan() {
+    local stamp line dev temp now
+    [[ -r "$DISK_SCAN_FILE" ]] || return 0
+    stamp=$(head -n1 "$DISK_SCAN_FILE" 2>/dev/null)
+    [[ -n "$stamp" && "$stamp" != "$LAST_SCAN_STAMP" ]] || return 0
+
+    LAST_SCAN_STAMP=$stamp
+    now=$(date +%s)
+    DISKS=()
+
+    while IFS='|' read -r dev temp; do
+        [[ "$dev" == /dev/* ]] || continue
+        DISKS+=("$dev")
+        if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > 0 && temp < 100 )); then
+            LAST_TEMP["$dev"]=$temp
+            LAST_SEEN["$dev"]=$now
+        fi
+    done < <(tail -n +2 "$DISK_SCAN_FILE")
+
+    DISK_READY=1
+}
+
+start_disk_scan
+log "started: $H, CPU sensor=${CPU_TEMP_FILE:-missing}"
+log "pwm1/fan1 = 3-pin rear/SYS header; pwm2/fan2 = 4-pin CPU header + splitter"
+
+while true; do
+    now=$(date +%s)
+
+    if [[ -n "$DISK_SCAN_PID" ]] && ! kill -0 "$DISK_SCAN_PID" 2>/dev/null; then
+        wait "$DISK_SCAN_PID" 2>/dev/null || true
+        DISK_SCAN_PID=""
+    fi
+    load_disk_scan
+
+    if [[ -z "$DISK_SCAN_PID" ]] && (( now - LAST_SCAN_START >= DISK_POLL_SECONDS )); then
+        start_disk_scan
+    fi
+
+    if CPU_C=$(read_cpu_c); then
+        CPU_OK=1
+    else
+        CPU_OK=0
+        CPU_C=-1
+    fi
+
+    HOT_DISK_C=-1
+    HOT_DISK="none"
+    DISK_SUMMARY=""
+
+    for dev in "${DISKS[@]}"; do
+        if [[ -n "${LAST_TEMP[$dev]:-}" && -n "${LAST_SEEN[$dev]:-}" ]]; then
+            age=$(( now - LAST_SEEN[$dev] ))
+            if (( age <= DISK_CACHE_SECONDS )); then
+                temp=${LAST_TEMP[$dev]}
+                if (( temp > HOT_DISK_C )); then
+                    HOT_DISK_C=$temp
+                    HOT_DISK=$dev
+                fi
+                if (( age > DISK_POLL_SECONDS + 5 )); then
+                    DISK_SUMMARY+="$dev=${temp}C~ "
+                else
+                    DISK_SUMMARY+="$dev=${temp}C "
+                fi
+                continue
+            fi
+        fi
+        DISK_SUMMARY+="$dev=sleep/unknown "
+    done
+
+    if (( CPU_OK )); then
+        CPU_TO_CPU=$(curve_value "$CPU_C" "$CPU_HEADER_CPU_CURVE")
+        CPU_TO_SYS=$(curve_value "$CPU_C" "$SYS_HEADER_CPU_CURVE")
+    else
+        CPU_TO_CPU=255
+        CPU_TO_SYS=255
+    fi
+
+    if (( HOT_DISK_C >= 0 )); then
+        DISK_TO_CPU=$(curve_value "$HOT_DISK_C" "$CPU_HEADER_DISK_CURVE")
+        DISK_TO_SYS=$(curve_value "$HOT_DISK_C" "$SYS_HEADER_DISK_CURVE")
+    elif (( DISK_READY )); then
+        # No readable/cached temperature usually means the disks are asleep.
+        DISK_TO_CPU=$(curve_value 0 "$CPU_HEADER_DISK_CURVE")
+        DISK_TO_SYS=$(curve_value 0 "$SYS_HEADER_DISK_CURVE")
+    else
+        # At startup, cool hard until the first all-disk scan finishes.
+        DISK_TO_CPU=255
+        DISK_TO_SYS=255
+    fi
+
+    # Physical mapping confirmed by manual fan testing.
+    PWM1=$(clamp_pwm "$(max2 "$CPU_TO_SYS" "$DISK_TO_SYS")")
+    PWM2=$(clamp_pwm "$(max2 "$CPU_TO_CPU" "$DISK_TO_CPU")")
+
+    if (( ! CPU_OK )); then
+        PWM1=255
+        PWM2=255
+    fi
+    if (( CPU_OK && CPU_C >= CPU_EMERGENCY_C )); then
+        PWM1=255
+        PWM2=255
+    fi
+    if (( HOT_DISK_C >= DISK_EMERGENCY_C )); then
+        PWM1=255
+        PWM2=255
+    fi
+
+    # HP firmware rewrites these values after roughly 1-2 seconds.
+    # Reassert every loop.
+    echo 1 > "$H/pwm1_enable"
+    echo 1 > "$H/pwm2_enable"
+    echo "$PWM1" > "$H/pwm1"
+    echo "$PWM2" > "$H/pwm2"
+
+    if (( now - LAST_STATUS >= STATUS_SECONDS )); then
+        LAST_STATUS=$now
+        FAN1=$(cat "$H/fan1_input" 2>/dev/null || echo '?')
+        FAN2=$(cat "$H/fan2_input" 2>/dev/null || echo '?')
+        (( CPU_OK )) && CPU_TEXT="${CPU_C}C" || CPU_TEXT="FAIL"
+        (( HOT_DISK_C >= 0 )) && HOT_TEXT="${HOT_DISK}=${HOT_DISK_C}C" || HOT_TEXT="none"
+
+        LINE="CPU=$CPU_TEXT HOT=$HOT_TEXT | SYS_HEADER=$PWM1 FAN1=${FAN1}rpm | CPU_HEADER=$PWM2 FAN2=${FAN2}rpm"
+        {
+            echo "$LINE"
+            echo "disks: ${DISK_SUMMARY:-none}"
+        } > "$STATUS_FILE"
+        log "$LINE"
+        log "disks: ${DISK_SUMMARY:-none}"
+    fi
+
+    sleep "$LOOP_DELAY"
+done

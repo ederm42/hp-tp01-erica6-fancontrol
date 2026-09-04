@@ -1,0 +1,2 @@
+#!/bin/bash
+/etc/rc.d/rc.hp-tp01-erica6-fancontrol start >/dev/null 2>&1 || true

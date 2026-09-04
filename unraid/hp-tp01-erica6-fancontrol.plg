@@ -1,0 +1,949 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name "hp-tp01-erica6-fancontrol">
+<!ENTITY author "ederm42">
+<!ENTITY version "1.0.0">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/ederm42/hp-tp01-erica6-fancontrol/main/unraid/hp-tp01-erica6-fancontrol.plg">
+<!ENTITY supportURL "https://github.com/ederm42/hp-tp01-erica6-fancontrol/issues">
+<!ENTITY icon "hp-tp01-erica6-fancontrol.png">
+<!ENTITY plugin "/boot/config/plugins/&name;">
+<!ENTITY emhttp "/usr/local/emhttp/plugins/&name;">
+]>
+
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings/HPErica6FanControl" pluginURL="&pluginURL;" support="&supportURL;" icon="&icon;" min="6.12.0">
+
+<CHANGES>
+### &version;
+- First clean release as hp-tp01-erica6-fancontrol.
+- Confirmed mapping: pwm1/fan1 is rear SYS_FAN; pwm2/fan2 is CPU_FAN + splitter.
+- Editable fan curves, Restore Defaults, disk temperature monitoring and fail-safe full speed.
+</CHANGES>
+
+<!-- Kernel driver dependency stays separate on purpose. -->
+<FILE Run="/bin/bash">
+<INLINE><![CDATA[
+if ! modinfo it87 >/dev/null 2>&1; then
+    echo ""
+    echo "WARNING: it87 is not available yet."
+    echo "Install 'ITE IT87 Driver' by ich777 from Community Applications."
+    echo "The fan controller will stay stopped until the driver is available."
+    echo ""
+fi
+
+for cmd in smartctl lsblk timeout; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "WARNING: missing required command: $cmd"
+    fi
+done
+]]></INLINE>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE><![CDATA[
+mkdir -p /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol
+printf '%s' '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' | base64 -d > /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol/hp-tp01-erica6-fancontrol.png
+chmod 0644 /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol/hp-tp01-erica6-fancontrol.png
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/&name;">
+<INLINE><![CDATA[
+#!/bin/bash
+set -u
+
+NAME="hp-tp01-erica6-fancontrol"
+CONFIG="${HP_TP01_ERICA6_FANCONTROL_CONFIG:-/etc/hp-tp01-erica6-fancontrol.conf}"
+STATUS_FILE="${HP_TP01_ERICA6_FANCONTROL_STATUS:-/var/run/hp-tp01-erica6-fancontrol.status}"
+DISK_SCAN_FILE="${HP_TP01_ERICA6_FANCONTROL_DISKS:-/var/run/hp-tp01-erica6-fancontrol.disks}"
+
+# Defaults. A config file may override these.
+LOOP_DELAY=0.5
+DISK_POLL_SECONDS=30
+DISK_CACHE_SECONDS=600
+STATUS_SECONDS=30
+
+# Confirmed TP01 mapping:
+#   pwm1/fan1 = 3-pin rear SYS_FAN
+#   pwm2/fan2 = 4-pin CPU_FAN + splitter
+SYS_HEADER_CPU_CURVE="45:110 55:130 65:165 75:210 85:255"
+SYS_HEADER_DISK_CURVE="30:110 35:125 38:145 41:170 44:200 47:230 50:255"
+CPU_HEADER_CPU_CURVE="45:64 55:90 65:130 75:190 85:255"
+CPU_HEADER_DISK_CURVE="30:64 35:90 38:120 41:160 44:200 47:235 50:255"
+CPU_EMERGENCY_C=90
+DISK_EMERGENCY_C=50
+
+[[ -r "$CONFIG" ]] && source "$CONFIG"
+
+log() {
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+fail() {
+    log "ERROR: $*"
+    exit 1
+}
+
+max2() {
+    (( $1 > $2 )) && echo "$1" || echo "$2"
+}
+
+clamp_pwm() {
+    local v=$1
+    (( v < 0 )) && v=0
+    (( v > 255 )) && v=255
+    echo "$v"
+}
+
+curve_value() {
+    local temp=$1 curve=$2 pair t p prev_t="" prev_p=""
+
+    for pair in $curve; do
+        t=${pair%%:*}
+        p=${pair##*:}
+        [[ "$t" =~ ^[0-9]+$ && "$p" =~ ^[0-9]+$ ]] || continue
+
+        if [[ -z "$prev_t" ]]; then
+            if (( temp <= t )); then
+                echo "$p"
+                return
+            fi
+            prev_t=$t
+            prev_p=$p
+            continue
+        fi
+
+        if (( temp <= t )); then
+            if (( t == prev_t )); then
+                echo "$p"
+            else
+                echo $(( prev_p + (temp - prev_t) * (p - prev_p) / (t - prev_t) ))
+            fi
+            return
+        fi
+
+        prev_t=$t
+        prev_p=$p
+    done
+
+    [[ -n "$prev_p" ]] && echo "$prev_p" || echo 255
+}
+
+find_hwmon() {
+    local h
+    for h in /sys/class/hwmon/hwmon*; do
+        [[ -r "$h/name" ]] || continue
+        [[ "$(cat "$h/name" 2>/dev/null)" == "it8628" ]] && { echo "$h"; return 0; }
+    done
+    return 1
+}
+
+ensure_it87() {
+    local h
+    h=$(find_hwmon || true)
+    if [[ -n "$h" ]]; then
+        echo "$h"
+        return 0
+    fi
+
+    command -v modprobe >/dev/null 2>&1 || return 1
+    modinfo it87 >/dev/null 2>&1 || return 1
+
+    modprobe -r it87 2>/dev/null || true
+    modprobe it87 force_id=0x8628 || return 1
+    sleep 1
+    find_hwmon
+}
+
+find_cpu_temp_file() {
+    local h label f
+    for h in /sys/class/hwmon/hwmon*; do
+        [[ -r "$h/name" ]] || continue
+        [[ "$(cat "$h/name" 2>/dev/null)" == "k10temp" ]] || continue
+
+        for label in "$h"/temp*_label; do
+            [[ -r "$label" ]] || continue
+            if [[ "$(cat "$label" 2>/dev/null)" == "Tctl" ]]; then
+                f=${label%_label}_input
+                [[ -r "$f" ]] && { echo "$f"; return 0; }
+            fi
+        done
+
+        [[ -r "$h/temp1_input" ]] && { echo "$h/temp1_input"; return 0; }
+    done
+    return 1
+}
+
+read_cpu_c() {
+    local raw
+    [[ -n "${CPU_TEMP_FILE:-}" && -r "$CPU_TEMP_FILE" ]] || return 1
+    raw=$(cat "$CPU_TEMP_FILE" 2>/dev/null) || return 1
+    [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+    (( raw >= 1000 && raw <= 120000 )) || return 1
+    echo $(( raw / 1000 ))
+}
+
+smart_temp_c() {
+    local dev=$1 out temp
+
+    if [[ "$dev" == /dev/nvme* ]]; then
+        out=$(timeout 4 smartctl -A "$dev" 2>/dev/null || true)
+    else
+        out=$(timeout 4 smartctl -n standby -A "$dev" 2>/dev/null || true)
+    fi
+
+    temp=$(awk '
+      ($1==190 || $1==194) && $10 ~ /^[0-9]+$/ { print $10; exit }
+      /^Temperature:/ {
+        for (i=2;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit }
+      }
+      /Current Drive Temperature:/ {
+        for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit }
+      }
+      /^Temperature Sensor [0-9]+:/ {
+        for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit }
+      }
+    ' <<< "$out")
+
+    [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > 0 && temp < 100 )) || return 1
+    echo "$temp"
+}
+
+scan_disks() {
+    local tmp="${DISK_SCAN_FILE}.$$" dev type temp
+    : > "$tmp"
+    printf '#%s\n' "$(date +%s)" >> "$tmp"
+
+    while read -r dev type; do
+        [[ "$type" == "disk" && -n "$dev" ]] || continue
+        if temp=$(smart_temp_c "/dev/$dev"); then
+            printf '%s|%s\n' "/dev/$dev" "$temp" >> "$tmp"
+        else
+            printf '%s|\n' "/dev/$dev" >> "$tmp"
+        fi
+    done < <(lsblk -dn -o NAME,TYPE 2>/dev/null)
+
+    mv -f "$tmp" "$DISK_SCAN_FILE"
+}
+
+command -v smartctl >/dev/null 2>&1 || fail "smartctl not found (install smartmontools)"
+command -v lsblk >/dev/null 2>&1 || fail "lsblk not found"
+command -v timeout >/dev/null 2>&1 || fail "timeout not found"
+
+# Do not allow two controllers to fight each other.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>/var/run/hp-tp01-erica6-fancontrol.lock
+    flock -n 9 || fail "already running"
+fi
+
+H=$(ensure_it87 || true)
+[[ -n "$H" ]] || fail "it87 driver not available or IT8628 compatibility interface did not appear"
+
+for f in pwm1 pwm2 pwm1_enable pwm2_enable fan1_input fan2_input; do
+    [[ -e "$H/$f" ]] || fail "$H/$f is missing"
+done
+
+CPU_TEMP_FILE=$(find_cpu_temp_file || true)
+[[ -n "$CPU_TEMP_FILE" ]] || log "WARNING: k10temp/Tctl not found; fail-safe will run both headers at full speed"
+
+mkdir -p "$(dirname "$STATUS_FILE")" "$(dirname "$DISK_SCAN_FILE")"
+rm -f "$STATUS_FILE" "$DISK_SCAN_FILE"
+
+DISK_SCAN_PID=""
+cleanup() {
+    trap - EXIT INT TERM
+    [[ -n "$DISK_SCAN_PID" ]] && kill "$DISK_SCAN_PID" 2>/dev/null || true
+    # Leave cooling high while HP firmware takes control back.
+    echo 1 > "$H/pwm1_enable" 2>/dev/null || true
+    echo 1 > "$H/pwm2_enable" 2>/dev/null || true
+    echo 255 > "$H/pwm1" 2>/dev/null || true
+    echo 255 > "$H/pwm2" 2>/dev/null || true
+    rm -f "$STATUS_FILE"
+    log "stopped; set both headers to 255 and released control"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+declare -A LAST_TEMP
+declare -A LAST_SEEN
+DISKS=()
+LAST_SCAN_STAMP=""
+LAST_SCAN_START=0
+LAST_STATUS=0
+DISK_READY=0
+
+start_disk_scan() {
+    scan_disks &
+    DISK_SCAN_PID=$!
+    LAST_SCAN_START=$(date +%s)
+}
+
+load_disk_scan() {
+    local stamp line dev temp now
+    [[ -r "$DISK_SCAN_FILE" ]] || return 0
+    stamp=$(head -n1 "$DISK_SCAN_FILE" 2>/dev/null)
+    [[ -n "$stamp" && "$stamp" != "$LAST_SCAN_STAMP" ]] || return 0
+
+    LAST_SCAN_STAMP=$stamp
+    now=$(date +%s)
+    DISKS=()
+
+    while IFS='|' read -r dev temp; do
+        [[ "$dev" == /dev/* ]] || continue
+        DISKS+=("$dev")
+        if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > 0 && temp < 100 )); then
+            LAST_TEMP["$dev"]=$temp
+            LAST_SEEN["$dev"]=$now
+        fi
+    done < <(tail -n +2 "$DISK_SCAN_FILE")
+
+    DISK_READY=1
+}
+
+start_disk_scan
+log "started: $H, CPU sensor=${CPU_TEMP_FILE:-missing}"
+log "pwm1/fan1 = 3-pin rear/SYS header; pwm2/fan2 = 4-pin CPU header + splitter"
+
+while true; do
+    now=$(date +%s)
+
+    if [[ -n "$DISK_SCAN_PID" ]] && ! kill -0 "$DISK_SCAN_PID" 2>/dev/null; then
+        wait "$DISK_SCAN_PID" 2>/dev/null || true
+        DISK_SCAN_PID=""
+    fi
+    load_disk_scan
+
+    if [[ -z "$DISK_SCAN_PID" ]] && (( now - LAST_SCAN_START >= DISK_POLL_SECONDS )); then
+        start_disk_scan
+    fi
+
+    if CPU_C=$(read_cpu_c); then
+        CPU_OK=1
+    else
+        CPU_OK=0
+        CPU_C=-1
+    fi
+
+    HOT_DISK_C=-1
+    HOT_DISK="none"
+    DISK_SUMMARY=""
+
+    for dev in "${DISKS[@]}"; do
+        if [[ -n "${LAST_TEMP[$dev]:-}" && -n "${LAST_SEEN[$dev]:-}" ]]; then
+            age=$(( now - LAST_SEEN[$dev] ))
+            if (( age <= DISK_CACHE_SECONDS )); then
+                temp=${LAST_TEMP[$dev]}
+                if (( temp > HOT_DISK_C )); then
+                    HOT_DISK_C=$temp
+                    HOT_DISK=$dev
+                fi
+                if (( age > DISK_POLL_SECONDS + 5 )); then
+                    DISK_SUMMARY+="$dev=${temp}C~ "
+                else
+                    DISK_SUMMARY+="$dev=${temp}C "
+                fi
+                continue
+            fi
+        fi
+        DISK_SUMMARY+="$dev=sleep/unknown "
+    done
+
+    if (( CPU_OK )); then
+        CPU_TO_CPU=$(curve_value "$CPU_C" "$CPU_HEADER_CPU_CURVE")
+        CPU_TO_SYS=$(curve_value "$CPU_C" "$SYS_HEADER_CPU_CURVE")
+    else
+        CPU_TO_CPU=255
+        CPU_TO_SYS=255
+    fi
+
+    if (( HOT_DISK_C >= 0 )); then
+        DISK_TO_CPU=$(curve_value "$HOT_DISK_C" "$CPU_HEADER_DISK_CURVE")
+        DISK_TO_SYS=$(curve_value "$HOT_DISK_C" "$SYS_HEADER_DISK_CURVE")
+    elif (( DISK_READY )); then
+        # No readable/cached temperature usually means the disks are asleep.
+        DISK_TO_CPU=$(curve_value 0 "$CPU_HEADER_DISK_CURVE")
+        DISK_TO_SYS=$(curve_value 0 "$SYS_HEADER_DISK_CURVE")
+    else
+        # At startup, cool hard until the first all-disk scan finishes.
+        DISK_TO_CPU=255
+        DISK_TO_SYS=255
+    fi
+
+    # Physical mapping confirmed by manual fan testing.
+    PWM1=$(clamp_pwm "$(max2 "$CPU_TO_SYS" "$DISK_TO_SYS")")
+    PWM2=$(clamp_pwm "$(max2 "$CPU_TO_CPU" "$DISK_TO_CPU")")
+
+    if (( ! CPU_OK )); then
+        PWM1=255
+        PWM2=255
+    fi
+    if (( CPU_OK && CPU_C >= CPU_EMERGENCY_C )); then
+        PWM1=255
+        PWM2=255
+    fi
+    if (( HOT_DISK_C >= DISK_EMERGENCY_C )); then
+        PWM1=255
+        PWM2=255
+    fi
+
+    # HP firmware rewrites these values after roughly 1-2 seconds.
+    # Reassert every loop.
+    echo 1 > "$H/pwm1_enable"
+    echo 1 > "$H/pwm2_enable"
+    echo "$PWM1" > "$H/pwm1"
+    echo "$PWM2" > "$H/pwm2"
+
+    if (( now - LAST_STATUS >= STATUS_SECONDS )); then
+        LAST_STATUS=$now
+        FAN1=$(cat "$H/fan1_input" 2>/dev/null || echo '?')
+        FAN2=$(cat "$H/fan2_input" 2>/dev/null || echo '?')
+        (( CPU_OK )) && CPU_TEXT="${CPU_C}C" || CPU_TEXT="FAIL"
+        (( HOT_DISK_C >= 0 )) && HOT_TEXT="${HOT_DISK}=${HOT_DISK_C}C" || HOT_TEXT="none"
+
+        LINE="CPU=$CPU_TEXT HOT=$HOT_TEXT | SYS_HEADER=$PWM1 FAN1=${FAN1}rpm | CPU_HEADER=$PWM2 FAN2=${FAN2}rpm"
+        {
+            echo "$LINE"
+            echo "disks: ${DISK_SUMMARY:-none}"
+        } > "$STATUS_FILE"
+        log "$LINE"
+        log "disks: ${DISK_SUMMARY:-none}"
+    fi
+
+    sleep "$LOOP_DELAY"
+done
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/default.conf">
+<INLINE><![CDATA[
+# HP TP01 Erica6 fan control
+# Curves are tempC:control pairs. Values between points are interpolated.
+# Confirmed mapping: pwm1/fan1 = rear SYS_FAN, pwm2/fan2 = CPU_FAN.
+LOOP_DELAY=0.5
+DISK_POLL_SECONDS=30
+DISK_CACHE_SECONDS=600
+STATUS_SECONDS=30
+
+# 3-pin rear/SYS header (Linux: pwm1 / fan1)
+SYS_HEADER_CPU_CURVE="45:110 55:130 65:165 75:210 85:255"
+SYS_HEADER_DISK_CURVE="30:110 35:125 38:145 41:170 44:200 47:230 50:255"
+
+# 4-pin CPU header + splitter (Linux: pwm2 / fan2)
+CPU_HEADER_CPU_CURVE="45:64 55:90 65:130 75:190 85:255"
+CPU_HEADER_DISK_CURVE="30:64 35:90 38:120 41:160 44:200 47:235 50:255"
+
+CPU_EMERGENCY_C=90
+DISK_EMERGENCY_C=50
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/HPErica6FanControl.page">
+<INLINE><![CDATA[
+Menu="OtherSettings"
+Title="HP TP01 Erica6 Fan Control"
+Icon="hp-tp01-erica6-fancontrol.png"
+Author="ederm42"
+---
+<?php
+$name = 'hp-tp01-erica6-fancontrol';
+$uiVersion = '1.0.0';
+$configFile = "/boot/config/plugins/$name/$name.conf";
+$defaultFile = "/usr/local/emhttp/plugins/$name/default.conf";
+$statusFile = "/var/run/$name.status";
+$logFile = "/var/log/$name.log";
+$pidFile = "/var/run/$name.pid";
+$rc = "/etc/rc.d/rc.$name";
+
+$defaults = [
+    'LOOP_DELAY' => '0.5',
+    'DISK_POLL_SECONDS' => '30',
+    'DISK_CACHE_SECONDS' => '600',
+    'STATUS_SECONDS' => '30',
+    'SYS_HEADER_CPU_CURVE' => '45:110 55:130 65:165 75:210 85:255',
+    'SYS_HEADER_DISK_CURVE' => '30:110 35:125 38:145 41:170 44:200 47:230 50:255',
+    'CPU_HEADER_CPU_CURVE' => '45:64 55:90 65:130 75:190 85:255',
+    'CPU_HEADER_DISK_CURVE' => '30:64 35:90 38:120 41:160 44:200 47:235 50:255',
+    'CPU_EMERGENCY_C' => '90',
+    'DISK_EMERGENCY_C' => '50',
+];
+
+function h($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function readConfig($path, $defaults) {
+    $cfg = $defaults;
+    if (!is_readable($path)) return $cfg;
+
+    foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') continue;
+        if (!preg_match('/^([A-Z0-9_]+)=(.*)$/', $line, $m)) continue;
+        $value = trim($m[2]);
+        if (strlen($value) >= 2 && (($value[0] === '"' && substr($value, -1) === '"') || ($value[0] === "'" && substr($value, -1) === "'"))) {
+            $value = substr($value, 1, -1);
+        }
+        $cfg[$m[1]] = $value;
+    }
+    return $cfg;
+}
+
+function curvePoints($curve) {
+    $points = [];
+    foreach (preg_split('/\s+/', trim($curve)) as $pair) {
+        if (preg_match('/^(\d+):(\d+)$/', $pair, $m)) {
+            $points[] = [(int)$m[1], (int)$m[2]];
+        }
+    }
+    return $points;
+}
+
+function postedCurve($tempKey, $controlKey, &$errors, $label) {
+    $temps = $_POST[$tempKey] ?? [];
+    $controls = $_POST[$controlKey] ?? [];
+    if (!is_array($temps) || !is_array($controls) || count($temps) !== count($controls) || count($temps) < 2 || count($temps) > 12) {
+        $errors[] = "$label must have 2-12 points.";
+        return null;
+    }
+
+    $out = [];
+    $lastTemp = -1;
+    foreach ($temps as $i => $tempRaw) {
+        $controlRaw = $controls[$i] ?? '';
+        if (!preg_match('/^\d+$/', (string)$tempRaw) || !preg_match('/^\d+$/', (string)$controlRaw)) {
+            $errors[] = "$label contains a non-numeric value.";
+            return null;
+        }
+        $temp = (int)$tempRaw;
+        $control = (int)$controlRaw;
+        if ($temp < 0 || $temp > 120 || $control < 0 || $control > 255) {
+            $errors[] = "$label values must be 0-120 C and 0-255 control.";
+            return null;
+        }
+        if ($temp <= $lastTemp) {
+            $errors[] = "$label temperatures must increase from top to bottom.";
+            return null;
+        }
+        $lastTemp = $temp;
+        $out[] = "$temp:$control";
+    }
+    return implode(' ', $out);
+}
+
+function postedInt($key, $min, $max, &$errors, $label) {
+    $raw = $_POST[$key] ?? '';
+    if (!preg_match('/^\d+$/', (string)$raw)) {
+        $errors[] = "$label must be a whole number.";
+        return null;
+    }
+    $value = (int)$raw;
+    if ($value < $min || $value > $max) {
+        $errors[] = "$label must be between $min and $max.";
+        return null;
+    }
+    return $value;
+}
+
+function copyFileAtomic($src, $dst) {
+    if (!is_readable($src)) return false;
+    $dir = dirname($dst);
+    if (!is_dir($dir) && !mkdir($dir, 0755, true)) return false;
+    $tmp = tempnam($dir, '.fanctl.');
+    if ($tmp === false) return false;
+    $data = file_get_contents($src);
+    $ok = $data !== false && file_put_contents($tmp, $data, LOCK_EX) !== false && rename($tmp, $dst);
+    if (!$ok) @unlink($tmp);
+    return $ok;
+}
+
+function writeConfig($path, $cfg) {
+    $text = "# HP TP01 fan control\n";
+    $text .= "# Curves are tempC:control pairs. Values between points are interpolated.\n";
+    $text .= "# Confirmed mapping: pwm1/fan1 = rear SYS_FAN, pwm2/fan2 = CPU_FAN.\n\n";
+    $text .= "LOOP_DELAY=0.5\n";
+    $text .= "DISK_POLL_SECONDS=30\n";
+    $text .= "DISK_CACHE_SECONDS=600\n";
+    $text .= "STATUS_SECONDS=30\n\n";
+    $text .= "# 3-pin rear/SYS header (Linux: pwm1 / fan1)\n";
+    $text .= 'SYS_HEADER_CPU_CURVE="'.$cfg['SYS_HEADER_CPU_CURVE']."\"\n";
+    $text .= 'SYS_HEADER_DISK_CURVE="'.$cfg['SYS_HEADER_DISK_CURVE']."\"\n\n";
+    $text .= "# 4-pin CPU header + splitter (Linux: pwm2 / fan2)\n";
+    $text .= 'CPU_HEADER_CPU_CURVE="'.$cfg['CPU_HEADER_CPU_CURVE']."\"\n";
+    $text .= 'CPU_HEADER_DISK_CURVE="'.$cfg['CPU_HEADER_DISK_CURVE']."\"\n\n";
+    $text .= 'CPU_EMERGENCY_C='.$cfg['CPU_EMERGENCY_C']."\n";
+    $text .= 'DISK_EMERGENCY_C='.$cfg['DISK_EMERGENCY_C']."\n";
+
+    $dir = dirname($path);
+    if (!is_dir($dir) && !mkdir($dir, 0755, true)) return false;
+    $tmp = tempnam($dir, '.fanctl.');
+    if ($tmp === false) return false;
+    $ok = file_put_contents($tmp, $text, LOCK_EX) !== false && rename($tmp, $path);
+    if (!$ok) @unlink($tmp);
+    return $ok;
+}
+
+$cfg = readConfig($configFile, readConfig($defaultFile, $defaults));
+$message = '';
+$messageClass = 'notice';
+$errors = [];
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'restore') {
+        if (copyFileAtomic($defaultFile, $configFile)) {
+            $cfg = readConfig($configFile, $defaults);
+            $out = [];
+            $code = 0;
+            exec($rc.' restart 2>&1', $out, $code);
+            if ($code === 0) {
+                $message = 'Defaults restored. Fan controller restarted.';
+            } else {
+                $message = 'Defaults restored, but restart failed. Check the log below.';
+                $messageClass = 'warning';
+            }
+        } else {
+            $errors[] = 'Could not restore the shipped default config.';
+        }
+    } elseif ($action === 'save') {
+        $new = $cfg;
+        $new['CPU_HEADER_CPU_CURVE'] = postedCurve('cpu_cpu_temp', 'cpu_cpu_control', $errors, 'CPU -> CPU header');
+        $new['CPU_HEADER_DISK_CURVE'] = postedCurve('disk_cpu_temp', 'disk_cpu_control', $errors, 'Disk -> CPU header');
+        $new['SYS_HEADER_DISK_CURVE'] = postedCurve('disk_sys_temp', 'disk_sys_control', $errors, 'Disk -> rear/SYS header');
+        $new['SYS_HEADER_CPU_CURVE'] = postedCurve('cpu_sys_temp', 'cpu_sys_control', $errors, 'CPU -> rear/SYS header');
+        $new['CPU_EMERGENCY_C'] = postedInt('CPU_EMERGENCY_C', 50, 110, $errors, 'CPU emergency temperature');
+        $new['DISK_EMERGENCY_C'] = postedInt('DISK_EMERGENCY_C', 30, 80, $errors, 'Disk emergency temperature');
+
+        if (!$errors && writeConfig($configFile, $new)) {
+            $cfg = $new;
+            $out = [];
+            $code = 0;
+            exec($rc.' restart 2>&1', $out, $code);
+            if ($code === 0) {
+                $message = 'Saved. Fan controller restarted with the new curves.';
+            } else {
+                $message = 'Saved, but restart failed. Check the log below.';
+                $messageClass = 'warning';
+            }
+        } elseif (!$errors) {
+            $errors[] = 'Could not write the config file.';
+        }
+    }
+}
+
+$running = false;
+if (is_readable($pidFile)) {
+    $pid = trim(file_get_contents($pidFile));
+    $running = ctype_digit($pid) && is_dir('/proc/'.$pid);
+}
+$status = is_readable($statusFile) ? trim(file_get_contents($statusFile)) : 'No status yet.';
+$log = is_readable($logFile) ? implode("\n", array_slice(file($logFile, FILE_IGNORE_NEW_LINES) ?: [], -24)) : 'No log yet.';
+
+function curveTable($title, $help, $curve, $tempName, $controlName) {
+    $points = curvePoints($curve);
+    echo '<div class="fanctl-curve" data-curve>';
+    echo '<div class="fanctl-curve-title"><div><h4>'.h($title).'</h4><p>'.h($help).'</p></div><button type="button" class="fanctl-add">Add point</button></div>';
+    echo '<table><thead><tr><th>Temp °C</th><th>Control 0-255</th><th></th></tr></thead><tbody>';
+    foreach ($points as $point) {
+        echo '<tr>';
+        echo '<td><input type="number" min="0" max="120" step="1" name="'.h($tempName).'[]" value="'.h($point[0]).'" required></td>';
+        echo '<td><input type="number" min="0" max="255" step="1" name="'.h($controlName).'[]" value="'.h($point[1]).'" required></td>';
+        echo '<td><button type="button" class="fanctl-remove" title="Remove point">Remove</button></td>';
+        echo '</tr>';
+    }
+    echo '</tbody></table>';
+    echo '</div>';
+}
+?>
+
+<style>
+#fanctl { max-width: 1180px; }
+#fanctl .fanctl-top { display:flex; align-items:center; gap:14px; margin:0 0 18px; }
+#fanctl .fanctl-icon { width:52px; height:52px; object-fit:contain; flex:0 0 auto; }
+#fanctl .fanctl-top h2 { margin:0 0 3px; }
+#fanctl .fanctl-top p { margin:0; opacity:.75; }
+#fanctl .fanctl-status { margin:0 0 22px; }
+#fanctl .fanctl-status-line { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+#fanctl .fanctl-pill { display:inline-block; padding:3px 9px; border:1px solid currentColor; border-radius:999px; font-weight:600; }
+#fanctl .fanctl-group { margin:26px 0 0; }
+#fanctl .fanctl-group > h3 { margin-bottom:4px; }
+#fanctl .fanctl-group > p { margin-top:0; opacity:.8; }
+#fanctl .fanctl-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:16px; }
+#fanctl .fanctl-curve { border:1px solid #7776; border-radius:6px; padding:14px; min-width:0; }
+#fanctl .fanctl-curve-title { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:10px; }
+#fanctl .fanctl-curve-title h4 { margin:0 0 3px; }
+#fanctl .fanctl-curve-title p { margin:0; opacity:.75; }
+#fanctl .fanctl-curve table { width:100%; border-collapse:collapse; }
+#fanctl .fanctl-curve th, #fanctl .fanctl-curve td { text-align:left; padding:5px 6px; }
+#fanctl .fanctl-curve th:last-child, #fanctl .fanctl-curve td:last-child { width:1%; white-space:nowrap; }
+#fanctl .fanctl-curve input[type=number] { width:100%; max-width:120px; box-sizing:border-box; }
+#fanctl .fanctl-add, #fanctl .fanctl-remove { white-space:nowrap; }
+#fanctl .fanctl-emergency { display:flex; gap:22px; flex-wrap:wrap; margin:24px 0 8px; }
+#fanctl .fanctl-emergency label { display:flex; align-items:center; gap:8px; }
+#fanctl .fanctl-emergency input { width:90px; }
+#fanctl .fanctl-actions { margin:18px 0 28px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+#fanctl .fanctl-actions small { opacity:.75; }
+#fanctl .fanctl-log { max-height:360px; overflow:auto; }
+@media (max-width:720px) {
+  #fanctl .fanctl-grid { grid-template-columns:1fr; }
+  #fanctl .fanctl-curve-title { flex-direction:column; }
+  #fanctl .fanctl-curve input[type=number] { max-width:none; }
+}
+</style>
+
+<div id="fanctl">
+    <div class="fanctl-top">
+        <img class="fanctl-icon" src="/plugins/hp-tp01-erica6-fancontrol/hp-tp01-erica6-fancontrol.png" alt="Fan icon">
+        <div>
+            <h2>HP TP01 Erica6 Fan Control</h2>
+            <p>Curve editor · UI <?= h($uiVersion) ?></p>
+        </div>
+    </div>
+
+    <div class="fanctl-status">
+        <div class="fanctl-status-line">
+            <b>Controller:</b>
+            <span class="fanctl-pill"><?= $running ? 'Running' : 'Stopped' ?></span>
+        </div>
+        <pre><?= h($status) ?></pre>
+    </div>
+
+    <?php if ($message): ?>
+        <div class="<?= h($messageClass) ?>"><?= h($message) ?></div>
+    <?php endif; ?>
+
+    <?php if ($errors): ?>
+        <div class="warning"><b>Not saved:</b><br><?= implode('<br>', array_map('h', $errors)) ?></div>
+    <?php endif; ?>
+
+    <form method="POST" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="<?= h($var['csrf_token'] ?? '') ?>">
+
+        <div class="fanctl-group">
+            <h3>4-pin CPU FAN header <code>pwm2 / fan2</code></h3>
+            <p>Your CPU fan and the two extra fans on the splitter are on this header. The higher request from CPU or disk temperature wins.</p>
+            <div class="fanctl-grid">
+                <?php curveTable('CPU temperature', 'Normal CPU response.', $cfg['CPU_HEADER_CPU_CURVE'], 'cpu_cpu_temp', 'cpu_cpu_control'); ?>
+                <?php curveTable('Disk temperature', 'Main airflow response for hot disks.', $cfg['CPU_HEADER_DISK_CURVE'], 'disk_cpu_temp', 'disk_cpu_control'); ?>
+            </div>
+        </div>
+
+        <div class="fanctl-group">
+            <h3>3-pin rear / SYS FAN header <code>pwm1 / fan1</code></h3>
+            <p>This is the stock rear HP exhaust fan. Linux exposes its speed control as <code>pwm1</code> even though the physical fan is 3-pin.</p>
+            <div class="fanctl-grid">
+                <?php curveTable('Disk temperature', 'Rear exhaust response to the hottest disk.', $cfg['SYS_HEADER_DISK_CURVE'], 'disk_sys_temp', 'disk_sys_control'); ?>
+                <?php curveTable('CPU temperature', 'Extra rear airflow when the CPU gets hot.', $cfg['SYS_HEADER_CPU_CURVE'], 'cpu_sys_temp', 'cpu_sys_control'); ?>
+            </div>
+        </div>
+
+        <div class="fanctl-emergency">
+            <label><b>CPU emergency</b> <input type="number" min="50" max="110" name="CPU_EMERGENCY_C" value="<?= h($cfg['CPU_EMERGENCY_C']) ?>" required> °C</label>
+            <label><b>Disk emergency</b> <input type="number" min="30" max="80" name="DISK_EMERGENCY_C" value="<?= h($cfg['DISK_EMERGENCY_C']) ?>" required> °C</label>
+        </div>
+
+        <div class="fanctl-actions">
+            <button type="submit" name="action" value="save">Save &amp; Restart</button>
+            <button type="submit" name="action" value="restore" formnovalidate class="fanctl-restore">Restore Defaults</button>
+            <small>255 = full. Emergency temperature forces both headers to 255.</small>
+        </div>
+    </form>
+
+    <h3>Recent log</h3>
+    <pre class="fanctl-log"><?= h($log) ?></pre>
+</div>
+
+<script>
+(function() {
+    var root = document.getElementById('fanctl');
+    if (!root) return;
+
+    var restore = root.querySelector('.fanctl-restore');
+    if (restore) {
+        restore.addEventListener('click', function(e) {
+            if (!confirm('Restore the shipped default curves and restart the controller?')) {
+                e.preventDefault();
+            }
+        });
+    }
+
+    root.addEventListener('click', function(e) {
+        var add = e.target.closest('.fanctl-add');
+        if (add) {
+            var card = add.closest('[data-curve]');
+            var body = card.querySelector('tbody');
+            var rows = body.querySelectorAll('tr');
+            if (rows.length >= 12) {
+                alert('Maximum 12 points per curve.');
+                return;
+            }
+            var last = rows[rows.length - 1];
+            var lastTemp = parseInt(last.cells[0].querySelector('input').value, 10);
+            var lastControl = parseInt(last.cells[1].querySelector('input').value, 10);
+            if (!Number.isFinite(lastTemp)) lastTemp = 0;
+            if (!Number.isFinite(lastControl)) lastControl = 0;
+            if (lastTemp >= 120) {
+                alert('Last temperature is already 120°C.');
+                return;
+            }
+
+            var row = last.cloneNode(true);
+            row.cells[0].querySelector('input').value = Math.min(120, lastTemp + 5);
+            row.cells[1].querySelector('input').value = lastControl;
+            body.appendChild(row);
+            return;
+        }
+
+        var remove = e.target.closest('.fanctl-remove');
+        if (remove) {
+            var body = remove.closest('tbody');
+            if (body.querySelectorAll('tr').length <= 2) {
+                alert('A curve needs at least two points.');
+                return;
+            }
+            remove.closest('tr').remove();
+        }
+    });
+})();
+</script>
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/event/started">
+<INLINE><![CDATA[
+#!/bin/bash
+/etc/rc.d/rc.hp-tp01-erica6-fancontrol start >/dev/null 2>&1 || true
+]]></INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/event/stopping">
+<INLINE><![CDATA[
+#!/bin/bash
+/etc/rc.d/rc.hp-tp01-erica6-fancontrol stop >/dev/null 2>&1 || true
+]]></INLINE>
+</FILE>
+
+<FILE Name="/etc/rc.d/rc.hp-tp01-erica6-fancontrol">
+<INLINE><![CDATA[
+#!/bin/bash
+
+NAME="hp-tp01-erica6-fancontrol"
+DAEMON="/usr/local/emhttp/plugins/$NAME/scripts/$NAME"
+CONFIG="/boot/config/plugins/$NAME/$NAME.conf"
+PIDFILE="/var/run/$NAME.pid"
+LOGFILE="/var/log/$NAME.log"
+STATUSFILE="/var/run/$NAME.status"
+
+running() {
+    [[ -r "$PIDFILE" ]] || return 1
+    local pid
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+start() {
+    if running; then
+        echo "$NAME is already running"
+        return 0
+    fi
+
+    if ! modinfo it87 >/dev/null 2>&1; then
+        echo "ERROR: it87 driver is missing. Install 'ITE IT87 Driver' by ich777 first."
+        return 1
+    fi
+
+    mkdir -p /var/run
+    touch "$LOGFILE"
+
+    HP_TP01_ERICA6_FANCONTROL_CONFIG="$CONFIG" \
+    HP_TP01_ERICA6_FANCONTROL_STATUS="$STATUSFILE" \
+    nohup "$DAEMON" >> "$LOGFILE" 2>&1 &
+
+    echo $! > "$PIDFILE"
+    sleep 1
+
+    if running; then
+        echo "$NAME started"
+    else
+        echo "$NAME failed to start. Check $LOGFILE"
+        rm -f "$PIDFILE"
+        return 1
+    fi
+}
+
+stop() {
+    if ! running; then
+        rm -f "$PIDFILE"
+        echo "$NAME is not running"
+        return 0
+    fi
+
+    local pid
+    pid=$(cat "$PIDFILE")
+    kill "$pid" 2>/dev/null || true
+
+    for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.25
+    done
+
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    echo "$NAME stopped"
+}
+
+status() {
+    if running; then
+        echo "$NAME is running (PID $(cat "$PIDFILE"))"
+        [[ -r "$STATUSFILE" ]] && cat "$STATUSFILE"
+    else
+        echo "$NAME is stopped"
+        return 1
+    fi
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    status) status ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+]]></INLINE>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE><![CDATA[
+mkdir -p /boot/config/plugins/hp-tp01-erica6-fancontrol
+chmod +x /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol/scripts/hp-tp01-erica6-fancontrol
+chmod +x /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol/event/started
+chmod +x /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol/event/stopping
+chmod +x /etc/rc.d/rc.hp-tp01-erica6-fancontrol
+
+CFG=/boot/config/plugins/hp-tp01-erica6-fancontrol/hp-tp01-erica6-fancontrol.conf
+DEFAULT=/usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol/default.conf
+if [ ! -f "$CFG" ]; then
+    cp "$DEFAULT" "$CFG"
+fi
+
+/etc/rc.d/rc.hp-tp01-erica6-fancontrol restart || true
+
+echo ""
+echo "HP TP01 Erica6 Fan Control installed."
+echo "Open Settings > HP TP01 Erica6 Fan Control."
+echo ""
+]]></INLINE>
+</FILE>
+
+<FILE Run="/bin/bash" Method="remove">
+<INLINE><![CDATA[
+/etc/rc.d/rc.hp-tp01-erica6-fancontrol stop 2>/dev/null || true
+rm -f /etc/rc.d/rc.hp-tp01-erica6-fancontrol
+rm -rf /usr/local/emhttp/plugins/hp-tp01-erica6-fancontrol
+rm -rf /boot/config/plugins/hp-tp01-erica6-fancontrol
+rm -f /var/run/hp-tp01-erica6-fancontrol.* /var/log/hp-tp01-erica6-fancontrol.log
+
+echo "HP TP01 Erica6 Fan Control removed."
+]]></INLINE>
+</FILE>
+
+</PLUGIN>

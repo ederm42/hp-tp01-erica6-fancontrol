@@ -1,0 +1,12 @@
+[Unit]
+Description=HP TP01 fan controller
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/hp-tp01-erica6-fancontrol
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

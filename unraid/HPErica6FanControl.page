@@ -1,0 +1,367 @@
+Menu="OtherSettings"
+Title="HP TP01 Erica6 Fan Control"
+Icon="hp-tp01-erica6-fancontrol.png"
+Author="ederm42"
+---
+<?php
+$name = 'hp-tp01-erica6-fancontrol';
+$uiVersion = '1.0.0';
+$configFile = "/boot/config/plugins/$name/$name.conf";
+$defaultFile = "/usr/local/emhttp/plugins/$name/default.conf";
+$statusFile = "/var/run/$name.status";
+$logFile = "/var/log/$name.log";
+$pidFile = "/var/run/$name.pid";
+$rc = "/etc/rc.d/rc.$name";
+
+$defaults = [
+    'LOOP_DELAY' => '0.5',
+    'DISK_POLL_SECONDS' => '30',
+    'DISK_CACHE_SECONDS' => '600',
+    'STATUS_SECONDS' => '30',
+    'SYS_HEADER_CPU_CURVE' => '45:110 55:130 65:165 75:210 85:255',
+    'SYS_HEADER_DISK_CURVE' => '30:110 35:125 38:145 41:170 44:200 47:230 50:255',
+    'CPU_HEADER_CPU_CURVE' => '45:64 55:90 65:130 75:190 85:255',
+    'CPU_HEADER_DISK_CURVE' => '30:64 35:90 38:120 41:160 44:200 47:235 50:255',
+    'CPU_EMERGENCY_C' => '90',
+    'DISK_EMERGENCY_C' => '50',
+];
+
+function h($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function readConfig($path, $defaults) {
+    $cfg = $defaults;
+    if (!is_readable($path)) return $cfg;
+
+    foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') continue;
+        if (!preg_match('/^([A-Z0-9_]+)=(.*)$/', $line, $m)) continue;
+        $value = trim($m[2]);
+        if (strlen($value) >= 2 && (($value[0] === '"' && substr($value, -1) === '"') || ($value[0] === "'" && substr($value, -1) === "'"))) {
+            $value = substr($value, 1, -1);
+        }
+        $cfg[$m[1]] = $value;
+    }
+    return $cfg;
+}
+
+function curvePoints($curve) {
+    $points = [];
+    foreach (preg_split('/\s+/', trim($curve)) as $pair) {
+        if (preg_match('/^(\d+):(\d+)$/', $pair, $m)) {
+            $points[] = [(int)$m[1], (int)$m[2]];
+        }
+    }
+    return $points;
+}
+
+function postedCurve($tempKey, $controlKey, &$errors, $label) {
+    $temps = $_POST[$tempKey] ?? [];
+    $controls = $_POST[$controlKey] ?? [];
+    if (!is_array($temps) || !is_array($controls) || count($temps) !== count($controls) || count($temps) < 2 || count($temps) > 12) {
+        $errors[] = "$label must have 2-12 points.";
+        return null;
+    }
+
+    $out = [];
+    $lastTemp = -1;
+    foreach ($temps as $i => $tempRaw) {
+        $controlRaw = $controls[$i] ?? '';
+        if (!preg_match('/^\d+$/', (string)$tempRaw) || !preg_match('/^\d+$/', (string)$controlRaw)) {
+            $errors[] = "$label contains a non-numeric value.";
+            return null;
+        }
+        $temp = (int)$tempRaw;
+        $control = (int)$controlRaw;
+        if ($temp < 0 || $temp > 120 || $control < 0 || $control > 255) {
+            $errors[] = "$label values must be 0-120 C and 0-255 control.";
+            return null;
+        }
+        if ($temp <= $lastTemp) {
+            $errors[] = "$label temperatures must increase from top to bottom.";
+            return null;
+        }
+        $lastTemp = $temp;
+        $out[] = "$temp:$control";
+    }
+    return implode(' ', $out);
+}
+
+function postedInt($key, $min, $max, &$errors, $label) {
+    $raw = $_POST[$key] ?? '';
+    if (!preg_match('/^\d+$/', (string)$raw)) {
+        $errors[] = "$label must be a whole number.";
+        return null;
+    }
+    $value = (int)$raw;
+    if ($value < $min || $value > $max) {
+        $errors[] = "$label must be between $min and $max.";
+        return null;
+    }
+    return $value;
+}
+
+function copyFileAtomic($src, $dst) {
+    if (!is_readable($src)) return false;
+    $dir = dirname($dst);
+    if (!is_dir($dir) && !mkdir($dir, 0755, true)) return false;
+    $tmp = tempnam($dir, '.fanctl.');
+    if ($tmp === false) return false;
+    $data = file_get_contents($src);
+    $ok = $data !== false && file_put_contents($tmp, $data, LOCK_EX) !== false && rename($tmp, $dst);
+    if (!$ok) @unlink($tmp);
+    return $ok;
+}
+
+function writeConfig($path, $cfg) {
+    $text = "# HP TP01 fan control\n";
+    $text .= "# Curves are tempC:control pairs. Values between points are interpolated.\n";
+    $text .= "# Confirmed mapping: pwm1/fan1 = rear SYS_FAN, pwm2/fan2 = CPU_FAN.\n\n";
+    $text .= "LOOP_DELAY=0.5\n";
+    $text .= "DISK_POLL_SECONDS=30\n";
+    $text .= "DISK_CACHE_SECONDS=600\n";
+    $text .= "STATUS_SECONDS=30\n\n";
+    $text .= "# 3-pin rear/SYS header (Linux: pwm1 / fan1)\n";
+    $text .= 'SYS_HEADER_CPU_CURVE="'.$cfg['SYS_HEADER_CPU_CURVE']."\"\n";
+    $text .= 'SYS_HEADER_DISK_CURVE="'.$cfg['SYS_HEADER_DISK_CURVE']."\"\n\n";
+    $text .= "# 4-pin CPU header + splitter (Linux: pwm2 / fan2)\n";
+    $text .= 'CPU_HEADER_CPU_CURVE="'.$cfg['CPU_HEADER_CPU_CURVE']."\"\n";
+    $text .= 'CPU_HEADER_DISK_CURVE="'.$cfg['CPU_HEADER_DISK_CURVE']."\"\n\n";
+    $text .= 'CPU_EMERGENCY_C='.$cfg['CPU_EMERGENCY_C']."\n";
+    $text .= 'DISK_EMERGENCY_C='.$cfg['DISK_EMERGENCY_C']."\n";
+
+    $dir = dirname($path);
+    if (!is_dir($dir) && !mkdir($dir, 0755, true)) return false;
+    $tmp = tempnam($dir, '.fanctl.');
+    if ($tmp === false) return false;
+    $ok = file_put_contents($tmp, $text, LOCK_EX) !== false && rename($tmp, $path);
+    if (!$ok) @unlink($tmp);
+    return $ok;
+}
+
+$cfg = readConfig($configFile, readConfig($defaultFile, $defaults));
+$message = '';
+$messageClass = 'notice';
+$errors = [];
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'restore') {
+        if (copyFileAtomic($defaultFile, $configFile)) {
+            $cfg = readConfig($configFile, $defaults);
+            $out = [];
+            $code = 0;
+            exec($rc.' restart 2>&1', $out, $code);
+            if ($code === 0) {
+                $message = 'Defaults restored. Fan controller restarted.';
+            } else {
+                $message = 'Defaults restored, but restart failed. Check the log below.';
+                $messageClass = 'warning';
+            }
+        } else {
+            $errors[] = 'Could not restore the shipped default config.';
+        }
+    } elseif ($action === 'save') {
+        $new = $cfg;
+        $new['CPU_HEADER_CPU_CURVE'] = postedCurve('cpu_cpu_temp', 'cpu_cpu_control', $errors, 'CPU -> CPU header');
+        $new['CPU_HEADER_DISK_CURVE'] = postedCurve('disk_cpu_temp', 'disk_cpu_control', $errors, 'Disk -> CPU header');
+        $new['SYS_HEADER_DISK_CURVE'] = postedCurve('disk_sys_temp', 'disk_sys_control', $errors, 'Disk -> rear/SYS header');
+        $new['SYS_HEADER_CPU_CURVE'] = postedCurve('cpu_sys_temp', 'cpu_sys_control', $errors, 'CPU -> rear/SYS header');
+        $new['CPU_EMERGENCY_C'] = postedInt('CPU_EMERGENCY_C', 50, 110, $errors, 'CPU emergency temperature');
+        $new['DISK_EMERGENCY_C'] = postedInt('DISK_EMERGENCY_C', 30, 80, $errors, 'Disk emergency temperature');
+
+        if (!$errors && writeConfig($configFile, $new)) {
+            $cfg = $new;
+            $out = [];
+            $code = 0;
+            exec($rc.' restart 2>&1', $out, $code);
+            if ($code === 0) {
+                $message = 'Saved. Fan controller restarted with the new curves.';
+            } else {
+                $message = 'Saved, but restart failed. Check the log below.';
+                $messageClass = 'warning';
+            }
+        } elseif (!$errors) {
+            $errors[] = 'Could not write the config file.';
+        }
+    }
+}
+
+$running = false;
+if (is_readable($pidFile)) {
+    $pid = trim(file_get_contents($pidFile));
+    $running = ctype_digit($pid) && is_dir('/proc/'.$pid);
+}
+$status = is_readable($statusFile) ? trim(file_get_contents($statusFile)) : 'No status yet.';
+$log = is_readable($logFile) ? implode("\n", array_slice(file($logFile, FILE_IGNORE_NEW_LINES) ?: [], -24)) : 'No log yet.';
+
+function curveTable($title, $help, $curve, $tempName, $controlName) {
+    $points = curvePoints($curve);
+    echo '<div class="fanctl-curve" data-curve>';
+    echo '<div class="fanctl-curve-title"><div><h4>'.h($title).'</h4><p>'.h($help).'</p></div><button type="button" class="fanctl-add">Add point</button></div>';
+    echo '<table><thead><tr><th>Temp °C</th><th>Control 0-255</th><th></th></tr></thead><tbody>';
+    foreach ($points as $point) {
+        echo '<tr>';
+        echo '<td><input type="number" min="0" max="120" step="1" name="'.h($tempName).'[]" value="'.h($point[0]).'" required></td>';
+        echo '<td><input type="number" min="0" max="255" step="1" name="'.h($controlName).'[]" value="'.h($point[1]).'" required></td>';
+        echo '<td><button type="button" class="fanctl-remove" title="Remove point">Remove</button></td>';
+        echo '</tr>';
+    }
+    echo '</tbody></table>';
+    echo '</div>';
+}
+?>
+
+<style>
+#fanctl { max-width: 1180px; }
+#fanctl .fanctl-top { display:flex; align-items:center; gap:14px; margin:0 0 18px; }
+#fanctl .fanctl-icon { width:52px; height:52px; object-fit:contain; flex:0 0 auto; }
+#fanctl .fanctl-top h2 { margin:0 0 3px; }
+#fanctl .fanctl-top p { margin:0; opacity:.75; }
+#fanctl .fanctl-status { margin:0 0 22px; }
+#fanctl .fanctl-status-line { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+#fanctl .fanctl-pill { display:inline-block; padding:3px 9px; border:1px solid currentColor; border-radius:999px; font-weight:600; }
+#fanctl .fanctl-group { margin:26px 0 0; }
+#fanctl .fanctl-group > h3 { margin-bottom:4px; }
+#fanctl .fanctl-group > p { margin-top:0; opacity:.8; }
+#fanctl .fanctl-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:16px; }
+#fanctl .fanctl-curve { border:1px solid #7776; border-radius:6px; padding:14px; min-width:0; }
+#fanctl .fanctl-curve-title { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:10px; }
+#fanctl .fanctl-curve-title h4 { margin:0 0 3px; }
+#fanctl .fanctl-curve-title p { margin:0; opacity:.75; }
+#fanctl .fanctl-curve table { width:100%; border-collapse:collapse; }
+#fanctl .fanctl-curve th, #fanctl .fanctl-curve td { text-align:left; padding:5px 6px; }
+#fanctl .fanctl-curve th:last-child, #fanctl .fanctl-curve td:last-child { width:1%; white-space:nowrap; }
+#fanctl .fanctl-curve input[type=number] { width:100%; max-width:120px; box-sizing:border-box; }
+#fanctl .fanctl-add, #fanctl .fanctl-remove { white-space:nowrap; }
+#fanctl .fanctl-emergency { display:flex; gap:22px; flex-wrap:wrap; margin:24px 0 8px; }
+#fanctl .fanctl-emergency label { display:flex; align-items:center; gap:8px; }
+#fanctl .fanctl-emergency input { width:90px; }
+#fanctl .fanctl-actions { margin:18px 0 28px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+#fanctl .fanctl-actions small { opacity:.75; }
+#fanctl .fanctl-log { max-height:360px; overflow:auto; }
+@media (max-width:720px) {
+  #fanctl .fanctl-grid { grid-template-columns:1fr; }
+  #fanctl .fanctl-curve-title { flex-direction:column; }
+  #fanctl .fanctl-curve input[type=number] { max-width:none; }
+}
+</style>
+
+<div id="fanctl">
+    <div class="fanctl-top">
+        <img class="fanctl-icon" src="/plugins/hp-tp01-erica6-fancontrol/hp-tp01-erica6-fancontrol.png" alt="Fan icon">
+        <div>
+            <h2>HP TP01 Erica6 Fan Control</h2>
+            <p>Curve editor · UI <?= h($uiVersion) ?></p>
+        </div>
+    </div>
+
+    <div class="fanctl-status">
+        <div class="fanctl-status-line">
+            <b>Controller:</b>
+            <span class="fanctl-pill"><?= $running ? 'Running' : 'Stopped' ?></span>
+        </div>
+        <pre><?= h($status) ?></pre>
+    </div>
+
+    <?php if ($message): ?>
+        <div class="<?= h($messageClass) ?>"><?= h($message) ?></div>
+    <?php endif; ?>
+
+    <?php if ($errors): ?>
+        <div class="warning"><b>Not saved:</b><br><?= implode('<br>', array_map('h', $errors)) ?></div>
+    <?php endif; ?>
+
+    <form method="POST" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="<?= h($var['csrf_token'] ?? '') ?>">
+
+        <div class="fanctl-group">
+            <h3>4-pin CPU FAN header <code>pwm2 / fan2</code></h3>
+            <p>Your CPU fan and the two extra fans on the splitter are on this header. The higher request from CPU or disk temperature wins.</p>
+            <div class="fanctl-grid">
+                <?php curveTable('CPU temperature', 'Normal CPU response.', $cfg['CPU_HEADER_CPU_CURVE'], 'cpu_cpu_temp', 'cpu_cpu_control'); ?>
+                <?php curveTable('Disk temperature', 'Main airflow response for hot disks.', $cfg['CPU_HEADER_DISK_CURVE'], 'disk_cpu_temp', 'disk_cpu_control'); ?>
+            </div>
+        </div>
+
+        <div class="fanctl-group">
+            <h3>3-pin rear / SYS FAN header <code>pwm1 / fan1</code></h3>
+            <p>This is the stock rear HP exhaust fan. Linux exposes its speed control as <code>pwm1</code> even though the physical fan is 3-pin.</p>
+            <div class="fanctl-grid">
+                <?php curveTable('Disk temperature', 'Rear exhaust response to the hottest disk.', $cfg['SYS_HEADER_DISK_CURVE'], 'disk_sys_temp', 'disk_sys_control'); ?>
+                <?php curveTable('CPU temperature', 'Extra rear airflow when the CPU gets hot.', $cfg['SYS_HEADER_CPU_CURVE'], 'cpu_sys_temp', 'cpu_sys_control'); ?>
+            </div>
+        </div>
+
+        <div class="fanctl-emergency">
+            <label><b>CPU emergency</b> <input type="number" min="50" max="110" name="CPU_EMERGENCY_C" value="<?= h($cfg['CPU_EMERGENCY_C']) ?>" required> °C</label>
+            <label><b>Disk emergency</b> <input type="number" min="30" max="80" name="DISK_EMERGENCY_C" value="<?= h($cfg['DISK_EMERGENCY_C']) ?>" required> °C</label>
+        </div>
+
+        <div class="fanctl-actions">
+            <button type="submit" name="action" value="save">Save &amp; Restart</button>
+            <button type="submit" name="action" value="restore" formnovalidate class="fanctl-restore">Restore Defaults</button>
+            <small>255 = full. Emergency temperature forces both headers to 255.</small>
+        </div>
+    </form>
+
+    <h3>Recent log</h3>
+    <pre class="fanctl-log"><?= h($log) ?></pre>
+</div>
+
+<script>
+(function() {
+    var root = document.getElementById('fanctl');
+    if (!root) return;
+
+    var restore = root.querySelector('.fanctl-restore');
+    if (restore) {
+        restore.addEventListener('click', function(e) {
+            if (!confirm('Restore the shipped default curves and restart the controller?')) {
+                e.preventDefault();
+            }
+        });
+    }
+
+    root.addEventListener('click', function(e) {
+        var add = e.target.closest('.fanctl-add');
+        if (add) {
+            var card = add.closest('[data-curve]');
+            var body = card.querySelector('tbody');
+            var rows = body.querySelectorAll('tr');
+            if (rows.length >= 12) {
+                alert('Maximum 12 points per curve.');
+                return;
+            }
+            var last = rows[rows.length - 1];
+            var lastTemp = parseInt(last.cells[0].querySelector('input').value, 10);
+            var lastControl = parseInt(last.cells[1].querySelector('input').value, 10);
+            if (!Number.isFinite(lastTemp)) lastTemp = 0;
+            if (!Number.isFinite(lastControl)) lastControl = 0;
+            if (lastTemp >= 120) {
+                alert('Last temperature is already 120°C.');
+                return;
+            }
+
+            var row = last.cloneNode(true);
+            row.cells[0].querySelector('input').value = Math.min(120, lastTemp + 5);
+            row.cells[1].querySelector('input').value = lastControl;
+            body.appendChild(row);
+            return;
+        }
+
+        var remove = e.target.closest('.fanctl-remove');
+        if (remove) {
+            var body = remove.closest('tbody');
+            if (body.querySelectorAll('tr').length <= 2) {
+                alert('A curve needs at least two points.');
+                return;
+            }
+            remove.closest('tr').remove();
+        }
+    });
+})();
+</script>
