@@ -1,6 +1,4 @@
-# hp-tp01-erica6-fancontrol
-
-**HP TP01 Erica6 Fan Control** 
+# HP TP01 Erica6 Fan Control (Unraid plugin & Linux)
 
 Small Unraid/Linux fan controller for the **HP Pavilion TP01** Ryzen edition which uses the **Erica6 motherboard**.
 
