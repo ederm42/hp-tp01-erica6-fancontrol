@@ -104,7 +104,7 @@ The repo default/example config is `config/default.conf`.
 
 The hardware discovery and manual test scripts are documented in [`docs/how-we-got-here.md`](docs/how-we-got-here.md). It includes the actual little scripts used to map the channels, prove the HP firmware overwrite, run full blast, and watch disk temperatures.
 
-## Safety / weirdness
+## Safety
 
 This is specifically for the TP01 setup above. The actual IT8631E is being forced to another supported `it87` ID. This project only trusts the fan controls plus Ryzen `k10temp`; don't trust random voltage/temp readings from the forced ITE profile.
 
